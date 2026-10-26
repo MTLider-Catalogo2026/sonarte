@@ -1,0 +1,14 @@
+{
+  "name": "SonArte — Botonera de sonidos",
+  "short_name": "SonArte",
+  "description": "Todos tus sonidos a un toque: efectos, música y walk-ups. Funciona sin internet.",
+  "start_url": "index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0d14",
+  "theme_color": "#0b0d14",
+  "icons": [
+    { "src": "icono.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
