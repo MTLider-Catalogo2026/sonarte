@@ -37,6 +37,15 @@
   .edbar{display:none;gap:8px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);}
   .edbar button{flex:1;background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:10px;
     padding:9px;font-size:13px;font-weight:600;cursor:pointer;}
+  .barbusca{padding:10px 12px 0;}
+  .barbusca input{width:100%;background:var(--card);color:var(--tx);border:1px solid var(--line);
+    border-radius:12px;padding:11px 14px;font-size:15px;}
+  .snd.conimg{background-size:cover;background-position:center;}
+  .snd.conimg:after{content:"";position:absolute;inset:0;border-radius:18px;
+    background:linear-gradient(0deg,rgba(0,0,0,.62),rgba(0,0,0,0) 55%);pointer-events:none;}
+  .snd.conimg .emoji{display:none;}
+  .snd.conimg .nom{position:relative;z-index:2;text-shadow:0 1px 3px #000;}
+  .snd.drag{opacity:.55;transform:scale(1.05);box-shadow:0 14px 28px rgba(0,0,0,.6);}
   main{flex:1;overflow-y:auto;padding:14px;padding-bottom:calc(14px + env(safe-area-inset-bottom));}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:14px;}
   /* Botón 3D glossy tipo tecla */
@@ -96,6 +105,7 @@
   </div>
   <input id="impFile" type="file" accept="application/json,.json" style="display:none"
     onchange="if(this.files[0]){ importarBotonera(this.files[0]); this.value=''; }">
+  <div class="barbusca"><input id="q" placeholder="🔎 Buscar sonido en todas las páginas…" oninput="render()"></div>
   <main><div class="grid" id="grid"></div></main>
 </div>
 
@@ -112,6 +122,10 @@
     <input id="m_file" type="file" accept="audio/*" onchange="cargarArchivo(this)">
     <span class="hint" id="m_file_info">Ningún archivo. (Los botones de ejemplo no necesitan archivo.)</span>
   </label>
+  <label class="f">Imagen del botón (opcional)
+    <input id="m_img" type="file" accept="image/*" onchange="cargarImagen(this)">
+    <span class="hint" id="m_img_info">Sin imagen (se usa el emoji). <a href="#" onclick="quitarImagen();return false;">Quitar imagen</a></span>
+  </label>
   <div class="dos">
     <label class="f">Desde (m:ss)<input id="m_desde" placeholder="0:00"></label>
     <label class="f">Hasta (m:ss)<input id="m_hasta" placeholder="vacío = todo"></label>
@@ -119,6 +133,7 @@
   <label class="f">Fundido (seg)<input id="m_fund" type="number" min="0" step="0.5" value="0"></label>
   <label class="f row"><input id="m_loop" type="checkbox"> Repetir en bucle (loop)</label>
   <label class="f row"><input id="m_mus" type="checkbox"> Es música de fondo (baja sola al disparar efectos)</label>
+  <label class="f row"><input id="m_excl" type="checkbox"> Cortar la canción anterior al sonar (walk-up)</label>
   <div style="margin:4px 0 12px"><button class="hbtn" onclick="previa()">▶ Escuchar</button></div>
   <div class="acc">
     <button class="del" onclick="borrarSonido()">🗑</button>
@@ -153,7 +168,8 @@ function dbDel(store,key){ return new Promise(function(res){ try{ var t=DB.trans
 function guardarEstado(){ dbPut("meta","estado",estado); }
 
 // ================== Motor de audio (Web Audio API) ==================
-var AC=null, master=null, musicBus=null, buffers={}, activos=[], efectos=0, musicaActual=null;
+var AC=null, master=null, musicBus=null, buffers={}, activos=[], efectos=0, musicaActual=null, exclusivoActual=null;
+var imgURLs={}, archivoImgTmp=null, imgBorrar=false, drag=null;
 function initAudio(){
   if(AC) return;
   AC=new (window.AudioContext||window.webkitAudioContext)();
@@ -198,6 +214,7 @@ async function reproducir(s){
   else g.gain.setValueAtTime(target,t0);
   if(dur && !s.loop && fund>0){ var fin=t0+dur; g.gain.setValueAtTime(target,Math.max(t0,fin-fund));
     g.gain.exponentialRampToValueAtTime(0.0001,fin); }
+  if(s.exclusivo){ if(exclusivoActual){ try{exclusivoActual.src.stop();}catch(e){} } exclusivoActual={src:src,g:g}; }
   if(s.esMusica){ if(musicaActual){ try{musicaActual.src.stop();}catch(e){} } musicaActual={src:src,g:g}; }
   else { efectos++; duck(); }
   try{ src.start(0, desde||0, dur); }catch(e){ src.start(0); }
@@ -207,6 +224,7 @@ async function reproducir(s){
     activos=activos.filter(function(x){return x!==rec;});
     if(!s.esMusica){ efectos=Math.max(0,efectos-1); if(efectos===0) unduck(); }
     if(musicaActual && musicaActual.src===src) musicaActual=null;
+    if(exclusivoActual && exclusivoActual.src===src) exclusivoActual=null;
     marcar(s.id,false);
   };
 }
@@ -217,7 +235,7 @@ function unduck(){ if(!musicBus) return; var t=AC.currentTime;
   musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(musicBus.gain.value,t);
   musicBus.gain.linearRampToValueAtTime(1,t+0.5); }
 function pararTodo(){ activos.slice().forEach(function(r){ try{r.src.stop();}catch(e){} });
-  activos=[]; efectos=0; musicaActual=null; if(musicBus){ musicBus.gain.cancelScheduledValues(AC.currentTime); musicBus.gain.value=1; }
+  activos=[]; efectos=0; musicaActual=null; exclusivoActual=null; if(musicBus){ musicBus.gain.cancelScheduledValues(AC.currentTime); musicBus.gain.value=1; }
   document.querySelectorAll(".snd.son").forEach(function(el){el.classList.remove("son");}); }
 function marcar(id,on){ var el=document.querySelector('.snd[data-id="'+id+'"]'); if(el) el.classList.toggle("son",on); }
 
@@ -225,47 +243,95 @@ function marcar(id,on){ var el=document.querySelector('.snd[data-id="'+id+'"]');
 function categorias(){ var c=[]; estado.sonidos.forEach(function(s){ if(c.indexOf(s.categoria)<0) c.push(s.categoria); }); return c; }
 function render(){
   var cats=categorias(); if(cats.indexOf(catActiva)<0) catActiva=cats[0]||null;
-  // tabs
-  var tabs=document.getElementById("tabs"); tabs.innerHTML="";
+  var q=(document.getElementById("q").value||"").trim().toLowerCase();
+  // tabs (se ocultan cuando estás buscando)
+  var tabs=document.getElementById("tabs"); tabs.innerHTML=""; tabs.style.display=q?"none":"flex";
   cats.forEach(function(c){ var t=document.createElement("div"); t.className="tab"+(c===catActiva?" on":"");
     t.textContent=c; t.onclick=function(){ catActiva=c; render(); }; tabs.appendChild(t); });
   if(editando){ var a=document.createElement("div"); a.className="tab add"; a.textContent="＋ Categoría";
     a.onclick=function(){ var n=prompt("Nombre de la categoría:"); if(n){ catActiva=n.trim(); nuevo(); } }; tabs.appendChild(a); }
+  document.getElementById("edbar").style.display = (editando && !q) ? "flex" : "none";
   // grid
   var g=document.getElementById("grid"); g.innerHTML="";
-  var lista=estado.sonidos.filter(function(s){return s.categoria===catActiva;});
-  if(!lista.length){ g.innerHTML='<div class="vacio">No hay sonidos en esta página.<br>Toca <b>✏️ Editar</b> y luego <b>＋</b> para agregar.</div>'; }
+  var lista;
+  if(q){ lista=estado.sonidos.filter(function(s){ return ((s.nombre||"")+" "+(s.categoria||"")).toLowerCase().indexOf(q)>=0; }); }
+  else { lista=estado.sonidos.filter(function(s){return s.categoria===catActiva;}); }
+  if(!lista.length){ g.innerHTML='<div class="vacio">'+(q?"Sin resultados para «"+escapar(q)+"».":"No hay sonidos en esta página.<br>Toca <b>✏️ Editar</b> y luego <b>＋</b> para agregar.")+'</div>'; }
   lista.forEach(function(s){
     var b=document.createElement("button"); b.className="snd"+(s.esMusica?" musica":""); b.dataset.id=s.id;
-    if(s.color) b.style.background="linear-gradient(145deg,"+aclarar(s.color)+","+s.color+")";
+    if(s.color) b.style.background="linear-gradient(145deg,"+s.color+","+s.color+")";
+    var badge = s.esMusica?'<div class="badge">♪ fondo</div>':(s.exclusivo?'<div class="badge">⚾ walk-up</div>':'');
     b.innerHTML='<div class="emoji">'+(s.emoji||"🔊")+'</div><div class="nom">'+escapar(s.nombre)+'</div>'
-      +(s.esMusica?'<div class="badge">♪ fondo</div>':'')+(editando?'<div class="ed">✎</div>':'');
-    b.onclick=function(){ if(editando) abrirModal(s.id); else reproducir(s); };
+      +badge+((editando&&!q)?'<div class="ed">✎</div>':'');
+    if(s.tieneImg){ b.classList.add("conimg"); ponerImagen(b,s.id); }
+    if(editando && !q){ b.addEventListener("pointerdown", function(e){ dragInicio(e,s,b); }); }
+    else { b.onclick=function(){ reproducir(s); }; }
     g.appendChild(b);
   });
-  document.getElementById("edbar").style.display = editando ? "flex" : "none";
-  if(editando){ var add=document.createElement("button"); add.className="snd"; add.style.opacity=".7";
+  if(editando && !q){ var add=document.createElement("button"); add.className="snd"; add.style.opacity=".7";
     add.innerHTML='<div class="emoji">＋</div><div class="nom">Agregar</div>'; add.onclick=nuevo; g.appendChild(add); }
-  // datalist categorias
   var dl=document.getElementById("cats"); dl.innerHTML=""; cats.forEach(function(c){ var o=document.createElement("option"); o.value=c; dl.appendChild(o); });
 }
-function aclarar(hex){ return hex; }
+async function ponerImagen(el,id){
+  try{ if(!imgURLs[id]){ var b=await dbGet("audio","img_"+id); if(!b) return; imgURLs[id]=URL.createObjectURL(b); }
+    el.style.backgroundImage="url('"+imgURLs[id]+"')"; }catch(e){}
+}
+// ---- Arrastrar para reordenar (modo edición) ----
+function dragInicio(e,s,el){
+  if(!editando) return;
+  drag={ id:s.id, el:el, x0:e.clientX, y0:e.clientY, moved:false };
+  document.addEventListener("pointermove",dragMueve);
+  document.addEventListener("pointerup",dragSuelta);
+}
+function dragMueve(e){
+  if(!drag) return;
+  if(!drag.moved){ if(Math.abs(e.clientX-drag.x0)+Math.abs(e.clientY-drag.y0)<10) return;
+    drag.moved=true; drag.el.classList.add("drag"); drag.el.style.pointerEvents="none"; }
+  var t=document.elementFromPoint(e.clientX,e.clientY); var tb=t&&t.closest?t.closest(".snd"):null;
+  if(!tb||tb===drag.el||!tb.dataset.id) return;
+  var g=document.getElementById("grid"), r=tb.getBoundingClientRect();
+  var despues=(e.clientY>r.top+r.height/2);
+  g.insertBefore(drag.el, despues?tb.nextSibling:tb);
+}
+function dragSuelta(){
+  document.removeEventListener("pointermove",dragMueve);
+  document.removeEventListener("pointerup",dragSuelta);
+  if(!drag) return;
+  if(drag.moved){ drag.el.classList.remove("drag"); drag.el.style.pointerEvents=""; ordenDesdeDOM(); }
+  else { abrirModal(drag.id); }
+  drag=null;
+}
+function ordenDesdeDOM(){
+  var ids=[].map.call(document.querySelectorAll('#grid .snd[data-id]'), function(e){return e.dataset.id;});
+  var enPagina=estado.sonidos.filter(function(s){return s.categoria===catActiva;});
+  var nuevos=ids.map(function(id){ return enPagina.find(function(s){return s.id===id;}); }).filter(Boolean);
+  // reemplaza en su MISMO lugar los sonidos de esta categoría, en el nuevo orden (no mueve las demás páginas)
+  var k=0;
+  estado.sonidos=estado.sonidos.map(function(s){ return s.categoria===catActiva ? (nuevos[k++]||s) : s; });
+  guardarEstado();
+}
 function escapar(t){ return (t||"").replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c];}); }
 function toggleEdit(){ editando=!editando; document.getElementById("btnEdit").classList.toggle("on",editando); render(); }
 
-function nuevo(){ editId=null; archivoTmp=null;
+function nuevo(){ editId=null; archivoTmp=null; archivoImgTmp=null; imgBorrar=false;
   document.getElementById("m_title").textContent="Nuevo sonido";
   set("m_nom",""); set("m_cat",catActiva||""); set("m_emoji","⚾"); set("m_desde",""); set("m_hasta","");
-  set("m_fund","0"); chk("m_loop",false); chk("m_mus",false);
+  set("m_fund","0"); chk("m_loop",false); chk("m_mus",false); chk("m_excl",false);
   document.getElementById("m_file_info").textContent="Ningún archivo. (Los botones de ejemplo no necesitan archivo.)";
+  document.getElementById("m_img_info").innerHTML='Sin imagen (se usa el emoji).';
   document.getElementById("modal").style.display="flex"; }
 function abrirModal(id){ var s=estado.sonidos.find(function(x){return x.id===id;}); if(!s)return;
-  editId=id; archivoTmp=null;
+  editId=id; archivoTmp=null; archivoImgTmp=null; imgBorrar=false;
   document.getElementById("m_title").textContent="Editar sonido";
   set("m_nom",s.nombre); set("m_cat",s.categoria); set("m_emoji",s.emoji||""); set("m_desde",s.desde||""); set("m_hasta",s.hasta||"");
-  set("m_fund",s.fundido||0); chk("m_loop",!!s.loop); chk("m_mus",!!s.esMusica);
+  set("m_fund",s.fundido||0); chk("m_loop",!!s.loop); chk("m_mus",!!s.esMusica); chk("m_excl",!!s.exclusivo);
   document.getElementById("m_file_info").textContent = s.tipo==="sintetico" ? "Sonido de ejemplo (sintetizado)" : "Audio guardado ✓ (sube otro para cambiarlo)";
+  document.getElementById("m_img_info").innerHTML = (s.tieneImg?'Imagen guardada ✓. ':'Sin imagen (se usa el emoji). ')+'<a href="#" onclick="quitarImagen();return false;">Quitar imagen</a>';
   document.getElementById("modal").style.display="flex"; }
+function cargarImagen(inp){ if(!inp.files[0])return; archivoImgTmp=inp.files[0]; imgBorrar=false;
+  document.getElementById("m_img_info").textContent="Imagen lista: "+archivoImgTmp.name; }
+function quitarImagen(){ archivoImgTmp=null; imgBorrar=true; document.getElementById("m_img").value="";
+  document.getElementById("m_img_info").textContent="Se quitará la imagen al guardar."; }
 function cerrarModal(){ document.getElementById("modal").style.display="none"; }
 function set(id,v){ document.getElementById(id).value=v; }
 function chk(id,v){ document.getElementById(id).checked=v; }
@@ -281,14 +347,20 @@ async function guardarSonido(){
   s.nombre=nom; s.categoria=(val("m_cat").trim()||"General"); s.emoji=val("m_emoji").trim()||"🔊";
   s.desde=val("m_desde").trim(); s.hasta=val("m_hasta").trim(); s.fundido=parseFloat(val("m_fund"))||0;
   s.loop=document.getElementById("m_loop").checked; s.esMusica=document.getElementById("m_mus").checked;
+  s.exclusivo=document.getElementById("m_excl").checked;
   if(archivoTmp){ s.tipo="archivo"; await dbPut("audio",s.id,archivoTmp); delete buffers[s.id]; }
+  if(archivoImgTmp){ await dbPut("audio","img_"+s.id,archivoImgTmp); s.tieneImg=true;
+    if(imgURLs[s.id]){ try{URL.revokeObjectURL(imgURLs[s.id]);}catch(e){} delete imgURLs[s.id]; } }
+  else if(imgBorrar){ await dbDel("audio","img_"+s.id); s.tieneImg=false;
+    if(imgURLs[s.id]){ try{URL.revokeObjectURL(imgURLs[s.id]);}catch(e){} delete imgURLs[s.id]; } }
   if(!editId) estado.sonidos.push(s);
-  catActiva=s.categoria; guardarEstado(); archivoTmp=null; cerrarModal(); render(); toast("Guardado");
+  catActiva=s.categoria; guardarEstado(); archivoTmp=null; archivoImgTmp=null; imgBorrar=false; cerrarModal(); render(); toast("Guardado");
 }
 async function borrarSonido(){ if(!editId){ cerrarModal(); return; }
   if(!confirm("¿Borrar este sonido?")) return;
   estado.sonidos=estado.sonidos.filter(function(x){return x.id!==editId;});
-  await dbDel("audio",editId); delete buffers[editId];
+  await dbDel("audio",editId); await dbDel("audio","img_"+editId); delete buffers[editId];
+  if(imgURLs[editId]){ try{URL.revokeObjectURL(imgURLs[editId]);}catch(e){} delete imgURLs[editId]; }
   guardarEstado(); cerrarModal(); render(); toast("Borrado"); }
 async function previa(){
   var temp={ id:"__previa", tipo: (editId && estado.sonidos.find(function(x){return x.id===editId;}) && estado.sonidos.find(function(x){return x.id===editId;}).tipo) || "archivo",
@@ -306,9 +378,10 @@ async function previa(){
 function blobABase64(blob){ return new Promise(function(res){ var fr=new FileReader(); fr.onload=function(){res(fr.result);}; fr.readAsDataURL(blob); }); }
 async function exportarBotonera(){
   toast("Preparando respaldo…");
-  var datos={ app:"SonArte", version:1, volumen:estado.volumen, sonidos:estado.sonidos, audios:{} };
+  var datos={ app:"SonArte", version:1, volumen:estado.volumen, sonidos:estado.sonidos, audios:{}, imagenes:{} };
   for(var i=0;i<estado.sonidos.length;i++){ var s=estado.sonidos[i];
-    if(s.tipo==="archivo"){ var b=await dbGet("audio",s.id); if(b) datos.audios[s.id]=await blobABase64(b); } }
+    if(s.tipo==="archivo"){ var b=await dbGet("audio",s.id); if(b) datos.audios[s.id]=await blobABase64(b); }
+    if(s.tieneImg){ var im=await dbGet("audio","img_"+s.id); if(im) datos.imagenes[s.id]=await blobABase64(im); } }
   var blob=new Blob([JSON.stringify(datos)],{type:"application/json"});
   var a=document.createElement("a"); a.href=URL.createObjectURL(blob);
   a.download="botonera-sonarte.json"; document.body.appendChild(a); a.click(); a.remove();
@@ -327,10 +400,13 @@ async function importarBotonera(file){
     var aud=d.audios||{};
     for(var oldId in aud){ var nid = reemplazar ? oldId : (mapId[oldId]||oldId);
       var b=await (await fetch(aud[oldId])).blob(); await dbPut("audio", nid, b); }
+    var ims=d.imagenes||{};
+    for(var oId in ims){ var nId = reemplazar ? oId : (mapId[oId]||oId);
+      var ib=await (await fetch(ims[oId])).blob(); await dbPut("audio", "img_"+nId, ib); }
     if(reemplazar){ estado.sonidos=nuevos; if(d.volumen!=null) estado.volumen=d.volumen;
       document.getElementById("vol").value=Math.round((estado.volumen||1)*100); if(master) master.gain.value=estado.volumen; }
     else { estado.sonidos=estado.sonidos.concat(nuevos); }
-    buffers={}; catActiva=null; guardarEstado(); render();
+    buffers={}; imgURLs={}; catActiva=null; guardarEstado(); render();
     toast(reemplazar?"Botonera importada ✓":"Botonera agregada ✓");
   }catch(e){ toast("No se pudo leer el archivo"); }
 }
@@ -359,7 +435,7 @@ async function arranque(){
   render();
   // desbloquear audio en el primer toque (requisito de iOS/Android)
   document.body.addEventListener("pointerdown",function(){ initAudio(); resume(); },{once:true});
-  if("serviceWorker" in navigator){ try{ navigator.serviceWorker.register("sw.js"); }catch(e){} }
+  if("serviceWorker" in navigator){ try{ navigator.serviceWorker.register("sw.js").catch(function(){}); }catch(e){} }
 }
 arranque();
 </script>
