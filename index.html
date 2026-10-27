@@ -175,7 +175,8 @@ function guardarEstado(){ dbPut("meta","estado",estado); }
 var AC=null, master=null, musicBus=null, buffers={}, activos=[], efectos=0, musicaActual=null, exclusivoActual=null;
 var imgURLs={}, archivoImgTmp=null, imgBorrar=false, drag=null;
 function initAudio(){
-  if(AC) return;
+  if(AC && AC.state!=="closed") return;
+  buffers={};   // los AudioBuffer pertenecen al contexto anterior; se vuelven a decodificar
   AC=new (window.AudioContext||window.webkitAudioContext)();
   master=AC.createGain(); master.gain.value=estado.volumen; master.connect(AC.destination);
   musicBus=AC.createGain(); musicBus.gain.value=1; musicBus.connect(master);
@@ -196,15 +197,20 @@ function aplicarModoAudio(){
   // 'ambient' = se mezcla encima sin tocar las otras apps.
   sesionAudio(estado.pausarExternas ? "transient-solo" : "ambient");
 }
-// iOS solo reanuda Spotify cuando SonArte SUELTA el audio. Mientras el AudioContext
-// siga "corriendo" (aunque ya no suene nada), iOS lo mantiene en pausa. Por eso, al
-// terminar el último sonido, suspendemos el contexto -> se reanuda la otra app.
+// iOS solo le DEVUELVE el audio a Spotify/Apple Music cuando SonArte CIERRA su motor
+// de sonido (suspenderlo no basta: Safari sigue reservando el audio). Por eso, al quedar
+// sin nada sonando, cerramos el AudioContext -> la otra app se reanuda. El motor se vuelve
+// a crear solo en el siguiente toque (el audio crudo queda en memoria, así recrear es rápido).
 var _suspendT=null;
 function programarSoltar(){
   clearTimeout(_suspendT);
+  if(!estado.pausarExternas) return;   // en modo mezcla no interrumpimos a nadie; no hay que soltar
   _suspendT=setTimeout(function(){
-    if(activos.length===0 && AC && AC.state==="running"){ try{ AC.suspend(); }catch(e){} }
-  }, 220);
+    if(activos.length===0 && AC && AC.state!=="closed"){
+      try{ AC.close(); }catch(e){}
+      AC=null; master=null; musicBus=null; buffers={}; _sesionTipo=null;
+    }
+  }, 300);
 }
 
 // genera sonidos de ejemplo sin archivos (ruido/tono) para probar al instante
@@ -217,12 +223,14 @@ function bufferSintetico(gen){
     else { d[i]=(Math.random()*2-1)*env*0.5; } }  // aplausos ~ ruido con caída
   return buf;
 }
+var rawCache={};   // audio crudo (ArrayBuffer) en memoria: sobrevive al cierre del contexto
 async function obtenerBuffer(s){
   if(buffers[s.id]) return buffers[s.id];
   if(s.tipo==="sintetico"){ buffers[s.id]=bufferSintetico(s.gen); return buffers[s.id]; }
-  var blob=await dbGet("audio",s.id); if(!blob) return null;
-  var arr=await blob.arrayBuffer();
-  var buf=await new Promise(function(res,rej){ AC.decodeAudioData(arr, res, rej); });
+  var arr=rawCache[s.id];
+  if(!arr){ var blob=await dbGet("audio",s.id); if(!blob) return null; arr=await blob.arrayBuffer(); rawCache[s.id]=arr; }
+  var copia=arr.slice(0);   // decodeAudioData "consume" (detach) el buffer; conservamos el original
+  var buf=await new Promise(function(res,rej){ AC.decodeAudioData(copia, res, rej); });
   buffers[s.id]=buf; return buf;
 }
 function seg(t){ t=(t||"").toString().trim(); if(!t) return 0;
@@ -382,7 +390,7 @@ async function guardarSonido(){
   s.desde=val("m_desde").trim(); s.hasta=val("m_hasta").trim(); s.fundido=parseFloat(val("m_fund"))||0;
   s.loop=document.getElementById("m_loop").checked; s.esMusica=document.getElementById("m_mus").checked;
   s.exclusivo=document.getElementById("m_excl").checked;
-  if(archivoTmp){ s.tipo="archivo"; await dbPut("audio",s.id,archivoTmp); delete buffers[s.id]; }
+  if(archivoTmp){ s.tipo="archivo"; await dbPut("audio",s.id,archivoTmp); delete buffers[s.id]; delete rawCache[s.id]; }
   if(archivoImgTmp){ await dbPut("audio","img_"+s.id,archivoImgTmp); s.tieneImg=true;
     if(imgURLs[s.id]){ try{URL.revokeObjectURL(imgURLs[s.id]);}catch(e){} delete imgURLs[s.id]; } }
   else if(imgBorrar){ await dbDel("audio","img_"+s.id); s.tieneImg=false;
@@ -393,7 +401,7 @@ async function guardarSonido(){
 async function borrarSonido(){ if(!editId){ cerrarModal(); return; }
   if(!confirm("¿Borrar este sonido?")) return;
   estado.sonidos=estado.sonidos.filter(function(x){return x.id!==editId;});
-  await dbDel("audio",editId); await dbDel("audio","img_"+editId); delete buffers[editId];
+  await dbDel("audio",editId); await dbDel("audio","img_"+editId); delete buffers[editId]; delete rawCache[editId];
   if(imgURLs[editId]){ try{URL.revokeObjectURL(imgURLs[editId]);}catch(e){} delete imgURLs[editId]; }
   guardarEstado(); cerrarModal(); render(); toast("Borrado"); }
 async function previa(){
@@ -401,9 +409,9 @@ async function previa(){
     gen:null, desde:val("m_desde"), hasta:val("m_hasta"), fundido:parseFloat(val("m_fund"))||0,
     loop:document.getElementById("m_loop").checked, esMusica:document.getElementById("m_mus").checked };
   // usar el audio en edición
-  if(archivoTmp){ await dbPut("audio","__previa",archivoTmp); delete buffers["__previa"]; }
+  if(archivoTmp){ await dbPut("audio","__previa",archivoTmp); delete buffers["__previa"]; delete rawCache["__previa"]; }
   else if(editId){ var s=estado.sonidos.find(function(x){return x.id===editId;});
-    if(s.tipo==="sintetico"){ temp.tipo="sintetico"; temp.gen=s.gen; } else { var b=await dbGet("audio",editId); if(b){ await dbPut("audio","__previa",b); delete buffers["__previa"]; } else { toast("Sube un audio"); return; } } }
+    if(s.tipo==="sintetico"){ temp.tipo="sintetico"; temp.gen=s.gen; } else { var b=await dbGet("audio",editId); if(b){ await dbPut("audio","__previa",b); delete buffers["__previa"]; delete rawCache["__previa"]; } else { toast("Sube un audio"); return; } } }
   else { toast("Sube un audio para escuchar"); return; }
   reproducir(temp);
 }
@@ -441,7 +449,7 @@ async function importarBotonera(file){
       if(d.pausarExternas!=null){ estado.pausarExternas=d.pausarExternas; document.getElementById("optPausar").checked=!!d.pausarExternas; }
       document.getElementById("vol").value=Math.round((estado.volumen||1)*100); if(master) master.gain.value=estado.volumen; }
     else { estado.sonidos=estado.sonidos.concat(nuevos); }
-    buffers={}; imgURLs={}; catActiva=null; guardarEstado(); render();
+    buffers={}; rawCache={}; imgURLs={}; catActiva=null; guardarEstado(); render();
     toast(reemplazar?"Botonera importada ✓":"Botonera agregada ✓");
   }catch(e){ toast("No se pudo leer el archivo"); }
 }
