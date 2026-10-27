@@ -196,6 +196,16 @@ function aplicarModoAudio(){
   // 'ambient' = se mezcla encima sin tocar las otras apps.
   sesionAudio(estado.pausarExternas ? "transient-solo" : "ambient");
 }
+// iOS solo reanuda Spotify cuando SonArte SUELTA el audio. Mientras el AudioContext
+// siga "corriendo" (aunque ya no suene nada), iOS lo mantiene en pausa. Por eso, al
+// terminar el último sonido, suspendemos el contexto -> se reanuda la otra app.
+var _suspendT=null;
+function programarSoltar(){
+  clearTimeout(_suspendT);
+  _suspendT=setTimeout(function(){
+    if(activos.length===0 && AC && AC.state==="running"){ try{ AC.suspend(); }catch(e){} }
+  }, 220);
+}
 
 // genera sonidos de ejemplo sin archivos (ruido/tono) para probar al instante
 function bufferSintetico(gen){
@@ -219,6 +229,7 @@ function seg(t){ t=(t||"").toString().trim(); if(!t) return 0;
   if(t.indexOf(":")>=0){ var p=t.split(":"); return (parseInt(p[0])||0)*60+(parseFloat(p[1])||0); } return parseFloat(t)||0; }
 
 async function reproducir(s){
+  clearTimeout(_suspendT);
   initAudio(); resume();
   if(estado.pausarExternas){ sesionAudio(s.esMusica ? "playback" : "transient-solo"); }
   else sesionAudio("ambient");
@@ -247,6 +258,7 @@ async function reproducir(s){
     if(musicaActual && musicaActual.src===src) musicaActual=null;
     if(exclusivoActual && exclusivoActual.src===src) exclusivoActual=null;
     marcar(s.id,false);
+    if(activos.length===0) programarSoltar();   // nada suena -> soltar audio y reanudar Spotify
   };
 }
 function duck(){ if(!musicBus) return; var t=AC.currentTime;
@@ -257,7 +269,8 @@ function unduck(){ if(!musicBus) return; var t=AC.currentTime;
   musicBus.gain.linearRampToValueAtTime(1,t+0.5); }
 function pararTodo(){ activos.slice().forEach(function(r){ try{r.src.stop();}catch(e){} });
   activos=[]; efectos=0; musicaActual=null; exclusivoActual=null; if(musicBus){ musicBus.gain.cancelScheduledValues(AC.currentTime); musicBus.gain.value=1; }
-  document.querySelectorAll(".snd.son").forEach(function(el){el.classList.remove("son");}); }
+  document.querySelectorAll(".snd.son").forEach(function(el){el.classList.remove("son");});
+  programarSoltar(); }   // soltar audio -> reanudar Spotify
 function marcar(id,on){ var el=document.querySelector('.snd[data-id="'+id+'"]'); if(el) el.classList.toggle("son",on); }
 
 // ================== UI ==================
