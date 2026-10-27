@@ -34,9 +34,12 @@
     color:var(--tx2);font-size:14px;font-weight:600;cursor:pointer;}
   .tab.on{background:var(--acento2);border-color:var(--acento2);color:#05201c;}
   .tab.add{color:var(--acento2);}
-  .edbar{display:none;gap:8px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);}
+  .edbar{display:none;flex-wrap:wrap;gap:8px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);}
   .edbar button{flex:1;background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:10px;
     padding:9px;font-size:13px;font-weight:600;cursor:pointer;}
+  .optpausa{flex-basis:100%;display:flex;align-items:center;gap:8px;background:var(--card);color:var(--tx);
+    border:1px solid var(--line);border-radius:10px;padding:9px 11px;font-size:13px;font-weight:600;cursor:pointer;}
+  .optpausa input{width:18px;height:18px;}
   .barbusca{padding:10px 12px 0;}
   .barbusca input{width:100%;background:var(--card);color:var(--tx);border:1px solid var(--line);
     border-radius:12px;padding:11px 14px;font-size:15px;}
@@ -102,6 +105,7 @@
   <div class="edbar" id="edbar">
     <button onclick="exportarBotonera()">⬇ Exportar botonera</button>
     <button onclick="document.getElementById('impFile').click()">⬆ Importar botonera</button>
+    <label class="optpausa"><input id="optPausar" type="checkbox" onchange="cambiarPausar(this.checked)"> ⏸ Pausar música de otras apps (Spotify) al sonar</label>
   </div>
   <input id="impFile" type="file" accept="application/json,.json" style="display:none"
     onchange="if(this.files[0]){ importarBotonera(this.files[0]); this.value=''; }">
@@ -177,6 +181,21 @@ function initAudio(){
   musicBus=AC.createGain(); musicBus.gain.value=1; musicBus.connect(master);
 }
 function resume(){ if(AC && AC.state==="suspended") AC.resume(); }
+// Pausar/mezclar con otras apps (Spotify, Apple Music). Solo lo soporta Safari iOS reciente;
+// en Android/PC no existe navigator.audioSession y simplemente se mezcla (no estorba).
+var _sesionTipo=null;
+function sesionAudio(tipo){
+  try{
+    if(!("audioSession" in navigator)) return;
+    if(_sesionTipo===tipo) return;
+    navigator.audioSession.type=tipo; _sesionTipo=tipo;
+  }catch(e){}
+}
+function aplicarModoAudio(){
+  // 'transient-solo' = pausa la música de otras apps mientras suena y la reanuda.
+  // 'ambient' = se mezcla encima sin tocar las otras apps.
+  sesionAudio(estado.pausarExternas ? "transient-solo" : "ambient");
+}
 
 // genera sonidos de ejemplo sin archivos (ruido/tono) para probar al instante
 function bufferSintetico(gen){
@@ -201,6 +220,8 @@ function seg(t){ t=(t||"").toString().trim(); if(!t) return 0;
 
 async function reproducir(s){
   initAudio(); resume();
+  if(estado.pausarExternas){ sesionAudio(s.esMusica ? "playback" : "transient-solo"); }
+  else sesionAudio("ambient");
   var buf=await obtenerBuffer(s);
   if(!buf){ toast("Ese botón no tiene audio aún"); return; }
   var desde=seg(s.desde), hasta=seg(s.hasta), fund=parseFloat(s.fundido)||0;
@@ -378,7 +399,7 @@ async function previa(){
 function blobABase64(blob){ return new Promise(function(res){ var fr=new FileReader(); fr.onload=function(){res(fr.result);}; fr.readAsDataURL(blob); }); }
 async function exportarBotonera(){
   toast("Preparando respaldo…");
-  var datos={ app:"SonArte", version:1, volumen:estado.volumen, sonidos:estado.sonidos, audios:{}, imagenes:{} };
+  var datos={ app:"SonArte", version:1, volumen:estado.volumen, pausarExternas:estado.pausarExternas, sonidos:estado.sonidos, audios:{}, imagenes:{} };
   for(var i=0;i<estado.sonidos.length;i++){ var s=estado.sonidos[i];
     if(s.tipo==="archivo"){ var b=await dbGet("audio",s.id); if(b) datos.audios[s.id]=await blobABase64(b); }
     if(s.tieneImg){ var im=await dbGet("audio","img_"+s.id); if(im) datos.imagenes[s.id]=await blobABase64(im); } }
@@ -404,6 +425,7 @@ async function importarBotonera(file){
     for(var oId in ims){ var nId = reemplazar ? oId : (mapId[oId]||oId);
       var ib=await (await fetch(ims[oId])).blob(); await dbPut("audio", "img_"+nId, ib); }
     if(reemplazar){ estado.sonidos=nuevos; if(d.volumen!=null) estado.volumen=d.volumen;
+      if(d.pausarExternas!=null){ estado.pausarExternas=d.pausarExternas; document.getElementById("optPausar").checked=!!d.pausarExternas; }
       document.getElementById("vol").value=Math.round((estado.volumen||1)*100); if(master) master.gain.value=estado.volumen; }
     else { estado.sonidos=estado.sonidos.concat(nuevos); }
     buffers={}; imgURLs={}; catActiva=null; guardarEstado(); render();
@@ -417,6 +439,9 @@ function toast(t){ var e=document.getElementById("toast"); e.textContent=t; e.cl
 document.getElementById("vol").addEventListener("input",function(){ estado.volumen=this.value/100;
   if(master) master.gain.value=estado.volumen; guardarEstado(); });
 
+function cambiarPausar(v){ estado.pausarExternas=!!v; guardarEstado(); aplicarModoAudio();
+  toast(v ? "Pausará Spotify al sonar (iPhone)" : "Se mezclará con otras apps"); }
+
 // ================== Arranque ==================
 async function arranque(){
   await abrirDB();
@@ -424,14 +449,16 @@ async function arranque(){
   if(g && g.sonidos){ estado=g; }
   else {
     // sembrado de ejemplo: una página de Efectos con sonidos sintetizados + una de Jugadores vacía
-    estado={ volumen:1, sonidos:[
+    estado={ volumen:1, pausarExternas:true, sonidos:[
       {id:"demo1",tipo:"sintetico",gen:"aplausos",nombre:"Aplausos",categoria:"Efectos",emoji:"👏",color:"#2563eb"},
       {id:"demo2",tipo:"sintetico",gen:"silbato",nombre:"Silbato",categoria:"Efectos",emoji:"🎽",color:"#059669"},
       {id:"demo3",tipo:"sintetico",gen:"tambor",nombre:"Tambor",categoria:"Efectos",emoji:"🥁",color:"#b91c1c"}
     ]};
     guardarEstado();
   }
+  if(estado.pausarExternas===undefined) estado.pausarExternas=true;
   document.getElementById("vol").value=Math.round((estado.volumen||1)*100);
+  document.getElementById("optPausar").checked = !!estado.pausarExternas;
   render();
   // desbloquear audio en el primer toque (requisito de iOS/Android)
   document.body.addEventListener("pointerdown",function(){ initAudio(); resume(); },{once:true});
